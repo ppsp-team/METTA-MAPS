@@ -102,9 +102,12 @@ class WandbContext:
             )
 
             # Save config and set up file syncing only if wandb init succeeded
-            wandb.save(os.path.join(self.cfg.data_dir, "*.log"), base_path=self.cfg.data_dir, policy="live")
-            wandb.save(os.path.join(self.cfg.data_dir, "*.yaml"), base_path=self.cfg.data_dir, policy="live")
-            wandb.save(os.path.join(self.cfg.data_dir, "*.json"), base_path=self.cfg.data_dir, policy="live")
+            if self.cfg.data_dir is not None:
+                wandb.save(os.path.join(self.cfg.data_dir, "*.log"), base_path=self.cfg.data_dir, policy="live")
+                wandb.save(os.path.join(self.cfg.data_dir, "*.yaml"), base_path=self.cfg.data_dir, policy="live")
+                wandb.save(os.path.join(self.cfg.data_dir, "*.json"), base_path=self.cfg.data_dir, policy="live")
+            else:
+                logger.warning("W&B data_dir is None; skipping wandb.save for log/yaml/json files.")
             logger.info(f"Successfully initialized W&B run: {self.run.name} ({self.run.id})")
 
             # --- File-based IPC: Write to the same directory as HEARTBEAT_FILE ---
