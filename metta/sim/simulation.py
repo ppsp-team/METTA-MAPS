@@ -31,7 +31,6 @@ from metta.mettagrid.stats_writer import StatsWriter
 from metta.rl.vecenv import make_vecenv
 from metta.sim.simulation_config import SimulationConfig
 from metta.sim.simulation_stats_db import SimulationStatsDB
-from metta.sim.thumbnail_automation import maybe_generate_and_upload_thumbnail
 from metta.sim.utils import get_or_create_policy_ids, wandb_policy_name_to_uri
 
 # Prefix for synthetic evaluation framework simulations (not real environment evaluations)
@@ -331,13 +330,13 @@ class Simulation:
             replay_data = episode_replay.get_replay_data()
 
             # Attempt to generate and upload thumbnail using episode ID (like replay files)
-            success, thumbnail_url = maybe_generate_and_upload_thumbnail(replay_data, episode_id)
-            if success:
-                logger.info(f"Generated thumbnail for episode_id: {episode_id}")
-                return thumbnail_url
-            else:
-                logger.debug(f"Thumbnail generation failed for episode_id: {episode_id}")
-                return None
+            # success, thumbnail_url = maybe_generate_and_upload_thumbnail(replay_data, episode_id)
+            # if success:
+            #     logger.info(f"Generated thumbnail for episode_id: {episode_id}")
+            #     return thumbnail_url
+            # else:
+            #     logger.debug(f"Thumbnail generation failed for episode_id: {episode_id}")
+            # return None
 
         except Exception as e:
             logger.error(f"Thumbnail generation failed for {self._name}: {e}")
