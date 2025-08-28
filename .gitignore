@@ -93,3 +93,5 @@ experiments/recipes/scratchpad/*.py
 
 resources
 identified-figures/
+experiments/user/
+.netrc
