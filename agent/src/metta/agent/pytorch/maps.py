@@ -35,7 +35,7 @@ class MAPS(PyTorchAgentMixin, LSTMWrapper):
         self.init_mixin(**mixin_params)
 
     @torch._dynamo.disable  # Exclude LSTM forward from Dynamo to avoid graph breaks
-    def forward(self, td: TensorDict, state=None, action=None):
+    def forward(self, td: TensorDict, state=None, action=None, cascade_rate: float = 1.0):
         observations = td["env_obs"]
 
         if state is None:
@@ -52,10 +52,15 @@ class MAPS(PyTorchAgentMixin, LSTMWrapper):
             B = observations.shape[0]
             TT = 1
 
-        # Now set TensorDict fields with mixin (TD is already reshaped if needed)
+        # Use mixin method to set TensorDict fields properly
         self.set_tensordict_fields(td, observations)
 
-        # Encode obs
+        # === STORE FLATTENED CNN OUTPUT FOR COMPARISON ===
+        # We need to capture the CNN output before fc1 for comparison logic
+        # This requires calling encode_observations with intermediate capture
+        cnn_flattened = self._encode_with_intermediate_capture(observations, state)
+
+        # Standard encoding for LSTM input
         hidden = self.policy.encode_observations(observations, state)
 
         # Use base class method for LSTM state management
@@ -71,10 +76,47 @@ class MAPS(PyTorchAgentMixin, LSTMWrapper):
 
         flat_hidden = lstm_output.transpose(0, 1).reshape(B * TT, -1)
 
-        # Decode
+        # === CASCADE LOGIC (matches old MettaAgent encoded_obs level) ===
+        current_hidden = flat_hidden.clone()  # Store current for state management
+
+        if state.get("hidden") is not None:
+            # Ensure previous hidden state is on same device and correct shape
+            prev_hidden = state["hidden"].to(flat_hidden.device)
+
+            # Handle batch size differences between training and inference
+            if prev_hidden.shape[0] != flat_hidden.shape[0]:
+                if prev_hidden.shape[0] == 1 and flat_hidden.shape[0] > 1:
+                    # Replicate single state for batch
+                    prev_hidden = prev_hidden.repeat(flat_hidden.shape[0], 1)
+                elif prev_hidden.shape[0] > flat_hidden.shape[0]:
+                    # Truncate to current batch size
+                    prev_hidden = prev_hidden[: flat_hidden.shape[0]]
+
+            # Apply cascade: cascade_rate * current + (1-cascade_rate) * previous
+            # This matches: Hidden = cascade_rate*Hidden + (1-cascade_rate)*prev_h2
+            cascaded_hidden = cascade_rate * flat_hidden + (1 - cascade_rate) * prev_hidden
+            flat_hidden = cascaded_hidden  # Use cascaded version for action decoding
+            current_hidden = cascaded_hidden.clone()  # Update current for state storage
+
+        # === COMPARISON LOGIC (matches old MettaAgent comparison method) ===
+        comparison = None
+        if cnn_flattened is not None:
+            # This matches: Output_comparison = f.relu(f.linear(Hidden, self.fc_hidden.weight.t()))
+            fc1_weight_transposed = self.policy.fc1.weight.t()  # Get fc1 weights transposed
+            reconstructed_input = torch.relu(torch.nn.functional.linear(current_hidden, fc1_weight_transposed))
+            # This matches: Comparison = Input - Output_comparison
+            comparison = cnn_flattened - reconstructed_input
+
+            # Store in TensorDict for downstream use
+            td["comparison"] = comparison
+
+        # Update state with current hidden for next iteration (detach to avoid gradients)
+        state["hidden"] = current_hidden.detach()
+
+        # Decode using the (potentially cascaded) hidden state
         logits_list, value = self.policy.decode_actions(flat_hidden, B * TT)
 
-        # Use mixin for mode-specific processing
+        # Use mixin for mode-specific processing (handles all TD reshaping)
         if action is None:
             # Mixin handles inference mode
             td = self.forward_inference(td, logits_list, value)
@@ -83,6 +125,93 @@ class MAPS(PyTorchAgentMixin, LSTMWrapper):
             td = self.forward_training(td, action, logits_list, value)
 
         return td
+
+    def _encode_with_intermediate_capture(self, observations, state=None):
+        """
+        Encode observations and capture intermediate CNN output for comparison logic.
+
+        This replicates the Policy.encode_observations flow but captures the flattened
+        CNN output (equivalent to obs_flattener in the old code) before fc1.
+        """
+        token_observations = observations
+        B = token_observations.shape[0]
+        TT = 1 if token_observations.dim() == 3 else token_observations.shape[1]
+        B_TT = B * TT
+
+        if token_observations.dim() != 3:
+            import einops
+
+            token_observations = einops.rearrange(token_observations, "b t m c -> (b t) m c")
+
+        # Use the same token-to-box conversion as the main encode_observations
+        # This is a simplified version - you might want to extract this to a shared method
+        try:
+            # Call the policy's encode method to get box_obs, then run CNN manually
+            box_obs = self._token_to_box(token_observations, B_TT)
+
+            # Run CNN pipeline up to the flatten step (before fc1)
+            x = box_obs / self.policy.max_vec
+            x = self.policy.cnn1(x)
+            x = torch.nn.functional.relu(x)
+            x = self.policy.cnn2(x)
+            x = torch.nn.functional.relu(x)
+            cnn_flattened = self.policy.flatten(x)  # This is equivalent to obs_flattener
+
+            return cnn_flattened
+
+        except Exception as e:
+            # If we can't capture intermediate, return None (comparison will be disabled)
+            logger.warning(f"Could not capture CNN intermediate for comparison: {e}")
+            return None
+
+    def _token_to_box(self, token_observations, B_TT):
+        """
+        Extract the token-to-box conversion logic from Policy.encode_observations.
+        This avoids code duplication when we need the intermediate CNN output.
+        """
+        import warnings
+
+        assert token_observations.shape[-1] == 3, f"Expected 3 channels per token. Got shape {token_observations.shape}"
+
+        # Extract coordinates and attributes (matching Policy.encode_observations exactly)
+        coords_byte = token_observations[..., 0].to(torch.uint8)
+        x_coord_indices = ((coords_byte >> 4) & 0x0F).long()
+        y_coord_indices = (coords_byte & 0x0F).long()
+        atr_indices = token_observations[..., 1].long()
+        atr_values = token_observations[..., 2].float()
+
+        # Create mask for valid tokens
+        valid_tokens = coords_byte != 0xFF
+        valid_atr = atr_indices < self.policy.num_layers
+        valid_mask = valid_tokens & valid_atr
+
+        # Log warning for out-of-bounds indices
+        invalid_atr_mask = valid_tokens & ~valid_atr
+        if invalid_atr_mask.any():
+            invalid_indices = atr_indices[invalid_atr_mask].unique()
+            warnings.warn(
+                f"Found observation attribute indices {sorted(invalid_indices.tolist())} "
+                f">= num_layers ({self.policy.num_layers}). These tokens will be ignored.",
+                stacklevel=2,
+            )
+
+        # Scatter-based write to avoid multi-dim advanced indexing
+        flat_spatial_index = x_coord_indices * self.policy.out_height + y_coord_indices
+        dim_per_layer = self.policy.out_width * self.policy.out_height
+        combined_index = atr_indices * dim_per_layer + flat_spatial_index
+
+        # Mask out invalid entries
+        safe_index = torch.where(valid_mask, combined_index, torch.zeros_like(combined_index))
+        safe_values = torch.where(valid_mask, atr_values, torch.zeros_like(atr_values))
+
+        # Scatter values into flattened buffer, then reshape
+        box_flat = torch.zeros(
+            (B_TT, self.policy.num_layers * dim_per_layer), dtype=atr_values.dtype, device=token_observations.device
+        )
+        box_flat.scatter_(1, safe_index, safe_values)
+        box_obs = box_flat.view(B_TT, self.policy.num_layers, self.policy.out_width, self.policy.out_height)
+
+        return box_obs
 
 
 class Policy(nn.Module):
