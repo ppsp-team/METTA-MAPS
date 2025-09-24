@@ -1,10 +1,6 @@
 from metta.sim.simulation_config import SimulationConfig
 from mettagrid.config.mettagrid_config import MettaGridConfig
 
-from experiments.recipes.in_context_learning.ordered_chains import (
-    ConverterChainTaskGenerator,
-)
-
 
 def icl_resource_chain_eval_env(env: MettaGridConfig) -> MettaGridConfig:
     env.game.agent.resource_limits["heart"] = 6
@@ -26,12 +22,18 @@ def make_icl_resource_chain_eval_env(
     obstacle_types: list[str] = [],
     densities: list[str] = [],
 ) -> MettaGridConfig:
+    # avoid circular import
+    from experiments.recipes.in_context_learning.ordered_chains import (
+        ConverterChainTaskGenerator,
+    )
+
     task_generator_cfg = ConverterChainTaskGenerator.Config(
         chain_lengths=[chain_length],
         num_sinks=[num_sinks],
         room_sizes=[room_size],
         obstacle_types=obstacle_types,
         densities=densities,
+        map_dir=None,  # for evals, generate the environments algorithmically
     )
     task_generator = ConverterChainTaskGenerator(task_generator_cfg)
     # different set of resources and converters for evals
@@ -41,51 +43,62 @@ def make_icl_resource_chain_eval_env(
 def make_icl_resource_chain_eval_suite() -> list[SimulationConfig]:
     return [
         SimulationConfig(
-            name="in_context_learning/2c_1s_small",
+            suite="in_context_learning",
+            name="2c_1s_small",
             env=make_icl_resource_chain_eval_env(2, 1, "small"),
         ),
         SimulationConfig(
-            name="in_context_learning/2c_2s_medium",
+            suite="in_context_learning",
+            name="2c_2s_medium",
             env=make_icl_resource_chain_eval_env(2, 2, "medium"),
         ),
         SimulationConfig(
-            name="in_context_learning/2c_2s_small_terrain",
+            suite="in_context_learning",
+            name="2c_2s_small_terrain",
             env=make_icl_resource_chain_eval_env(
                 2, 2, "small", ["square"], ["balanced"]
             ),
         ),
         SimulationConfig(
-            name="in_context_learning/3c_1s_small",
+            suite="in_context_learning",
+            name="3c_1s_small",
             env=make_icl_resource_chain_eval_env(3, 1, "small"),
         ),
         SimulationConfig(
-            name="in_context_learning/3c_2s_small",
+            suite="in_context_learning",
+            name="3c_2s_small",
             env=make_icl_resource_chain_eval_env(3, 2, "small"),
         ),
         SimulationConfig(
-            name="in_context_learning/3c_1s_small_terrain",
+            suite="in_context_learning",
+            name="3c_1s_small_terrain",
             env=make_icl_resource_chain_eval_env(
                 3, 1, "small", ["cross"], ["balanced"]
             ),
         ),
         SimulationConfig(
-            name="in_context_learning/4c_1s_small",
+            suite="in_context_learning",
+            name="4c_1s_small",
             env=make_icl_resource_chain_eval_env(4, 1, "small"),
         ),
         SimulationConfig(
-            name="in_context_learning/4c_2s_small",
+            suite="in_context_learning",
+            name="4c_2s_small",
             env=make_icl_resource_chain_eval_env(4, 2, "small"),
         ),
         SimulationConfig(
-            name="in_context_learning/4c_2s_small_terrain",
+            suite="in_context_learning",
+            name="4c_2s_small_terrain",
             env=make_icl_resource_chain_eval_env(4, 2, "small", ["L"], ["balanced"]),
         ),
         SimulationConfig(
-            name="in_context_learning/5c_2s_small",
+            suite="in_context_learning",
+            name="5c_2s_small",
             env=make_icl_resource_chain_eval_env(5, 2, "small"),
         ),
         SimulationConfig(
-            name="in_context_learning/5c_2s_medium_terrain",
+            suite="in_context_learning",
+            name="5c_2s_medium_terrain",
             env=make_icl_resource_chain_eval_env(
                 5, 2, "medium", ["square"], ["balanced"]
             ),
